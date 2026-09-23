@@ -61,7 +61,7 @@ plugins:
       stale_after: "30m"
       log_level: "warn"
       author: "local"                                        # 这两项不能为空，见 §8
-      repository: "https://example.com/opencodego-pool"       # 填你自己的仓库更好
+      repository: "https://github.com/AlphaGodzilla/cpa-opencodego-pool"   # 本插件仓库
       exclude_keys: []
       pin_sessions: {}
 ```
@@ -141,6 +141,47 @@ if !item.Enabled {
 > 本文档早期示例里出现过的 `be6bf799f8f0` / `06ff50e27a06` 是**占位符** `oc_sk_xxxx0N` 的哈希，
 > 抄它不会匹配到任何东西 —— 而且 `exclude_keys` 的未命中只会记一条 warn（不泄漏引用内容），
 > 不会报错，所以务必从页面上复制。
+
+### 透传客户端 header 到上游
+
+如果上游（opencode）需要看到客户端的原始请求头，**宿主本来就支持，不需要改插件**。在 provider 的
+`headers:` 里，值以 `$` 开头就会替换成**同名客户端请求头**的值：
+
+```yaml
+openai-compatibility:
+  - name: opencode_go
+    base-url: https://opencode.ai/zen/go/v1/chat/completions
+    headers:
+      X-Opencode-Client: "$X-Opencode-Client"
+      X-Opencode-Session: "$X-Opencode-Session"
+      User-Agent: "$User-Agent"
+    api-key-entries:
+      - api-key: oc_sk_xxxx01
+        weight: 1
+```
+
+语义：
+
+- **值必须以 `$` 开头**。否则是固定值——`User-Agent: "opencode-go-quota"` 是写死一个字符串，不是透传。
+- 客户端**没带该头就整条不发**，不会送空值。
+- 头名大小写不敏感（内部有兜底遍历）。
+- 覆盖全部请求路径：非流式、流式、图片生成及其流式版本。
+
+链路（`internal/util/header_helpers.go`）：入站 header 由 `headersFromContext` 从 gin context
+**完整克隆**进 `opts.Headers` → `extractCustomHeaders` 做 `$` 替换 → `applyCustomHeaders` 写进上游请求。
+
+与本插件的关系：
+
+| 关注点 | 结论 |
+|---|---|
+| `X-Opencode-Session` 同时是插件的路由依据 | 插件从 `scheduler.pick` 的 `Options.Headers` 读同一个头，两边互不影响 |
+| 插件的 usage 拉取 | **不受影响**：它自己设 `User-Agent: opencode-go-quota`，走 `host.http.do`，不经过 provider 的 `headers:` |
+| 改 `headers:` 会不会掐断在途流 | **不会**。auth ID 只由 `(kind, api-key, base-url, proxy-url)` 哈希而来，headers 不参与 → 这是 Modify 而非 Delete+Add |
+
+> ⚠️ `applyCustomHeaders` 在 bearer 设置**之后**执行，且用 `Header.Set` 无条件覆盖。**不要在 `headers:` 里写
+> `Authorization`** —— 它会静默覆盖每个 key 的 bearer，所有 key 变成同一个，插件的用量均衡看起来就"不生效"了。
+
+> 同一机制还有一个魔法变量 `$CPA-SESSION-ID`，展开成宿主的内部会话 ID。
 
 ## 3. 路由规则
 
