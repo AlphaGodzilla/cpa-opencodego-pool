@@ -1,0 +1,6 @@
+# Build output
+bin/
+
+# Editor and OS noise
+.DS_Store
+*.swp
